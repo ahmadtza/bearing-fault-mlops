@@ -57,3 +57,25 @@ jobs:
           docker build \
             -f Dockerfile.mlflow \
             -t bearing-mlflow:ci .
+    compose-validation:
+    name: Validate Docker Compose
+    runs-on: ubuntu-latest
+    needs: docker-build
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Create CI environment file
+        run: |
+          cat <<EOF > .env
+          POSTGRES_PASSWORD=ci_postgres_password
+          MINIO_ROOT_USER=ci_minio_admin
+          MINIO_ROOT_PASSWORD=ci_minio_password_123
+          EOF
+
+      - name: Validate Docker Compose configuration
+        run: docker compose config --quiet
+
+      - name: List Docker Compose services
+        run: docker compose config --services
