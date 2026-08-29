@@ -153,3 +153,143 @@ jobs:
           docker compose down -v
           docker volume rm bearing_mlflow_db || true
           docker volume rm bearing_mlflow_artifacts || true
+
+  deploy-local:
+    name: Deploy Local
+    runs-on:
+      - self-hosted
+      - Linux
+      - X64
+      - local-deploy
+
+    needs: integration-test
+
+    # Never deploy pull requests.
+    # Deploy only successful pushes to main.
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Verify Docker
+        run: |
+          docker version
+          docker compose version
+
+      - name: Verify deployment secrets
+        run: |
+          test -f "$HOME/bearing-deploy-secrets/.env"
+          test -f "$HOME/bearing-deploy-secrets/certs/localhost.crt"
+          test -f "$HOME/bearing-deploy-secrets/certs/localhost.key"
+          test -f "$HOME/bearing-deploy-secrets/auth/.htpasswd"
+
+          echo "Local deployment secrets are available."
+
+      - name: Install local deployment secrets
+        run: |
+          cp "$HOME/bearing-deploy-secrets/.env" .env
+
+          mkdir -p certs auth
+
+          cp "$HOME/bearing-deploy-secrets/certs/localhost.crt" \
+            certs/localhost.crt
+
+          cp "$HOME/bearing-deploy-secrets/certs/localhost.key" \
+            certs/localhost.key
+
+          cp "$HOME/bearing-deploy-secrets/auth/.htpasswd" \
+            auth/.htpasswd
+
+      - name: Verify persistent Docker volumes
+        run: |
+          docker volume inspect bearing_mlflow_db >/dev/null
+          docker volume inspect bearing_mlflow_artifacts >/dev/null
+          docker volume inspect bearing_fault_project_bearing_postgres_data >/dev/null
+          docker volume inspect bearing_fault_project_bearing_minio_data >/dev/null
+
+          echo "All production volumes are available."
+
+      - name: Validate production Compose configuration
+        run: |
+          docker compose \
+            -p bearing_fault_project \
+            config --quiet
+
+      - name: Deploy local production stack
+        run: |
+          docker compose \
+            -p bearing_fault_project \
+            up -d --build
+
+      - name: Show deployment status
+        run: |
+          docker compose \
+            -p bearing_fault_project \
+            ps
+
+      - name: Wait for MLflow
+        run: |
+          for i in {1..30}; do
+            if docker compose \
+              -p bearing_fault_project \
+              exec -T mlflow \
+              python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:5000/health', timeout=3)" \
+              2>/dev/null; then
+
+              echo "MLflow is healthy."
+              exit 0
+            fi
+
+            echo "Waiting for MLflow... ($i/30)"
+            sleep 5
+          done
+
+          echo "MLflow health check failed."
+          exit 1
+
+      - name: Wait for FastAPI
+        run: |
+          for i in {1..30}; do
+            if docker compose \
+              -p bearing_fault_project \
+              exec -T api \
+              python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3)" \
+              2>/dev/null; then
+
+              echo "FastAPI is healthy."
+              exit 0
+            fi
+
+            echo "Waiting for FastAPI... ($i/30)"
+            sleep 5
+          done
+
+          echo "FastAPI health check failed."
+          exit 1
+
+      - name: Verify Nginx
+        run: |
+          docker compose \
+            -p bearing_fault_project \
+            exec -T nginx \
+            nginx -t
+
+      - name: Final deployment status
+        run: |
+          echo "Local deployment completed successfully."
+
+          docker compose \
+            -p bearing_fault_project \
+            ps
+
+      - name: Show deployment logs on failure
+        if: failure()
+        run: |
+          docker compose \
+            -p bearing_fault_project \
+            ps || true
+
+          docker compose \
+            -p bearing_fault_project \
+            logs --tail=200 || true
