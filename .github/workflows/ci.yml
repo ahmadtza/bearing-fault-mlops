@@ -95,6 +95,10 @@ jobs:
           MINIO_ROOT_USER=ci_minio_admin
           MINIO_ROOT_PASSWORD=ci_minio_password_123
           EOF
+            - name: Create external CI volumes
+        run: |
+          docker volume create bearing_mlflow_db
+          docker volume create bearing_mlflow_artifacts
 
       - name: Start infrastructure services
         run: |
@@ -142,3 +146,5 @@ jobs:
         if: always()
         run: |
           docker compose down -v
+          docker volume rm bearing_mlflow_db || true
+          docker volume rm bearing_mlflow_artifacts || true
