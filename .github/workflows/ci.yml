@@ -57,7 +57,7 @@ jobs:
           docker build \
             -f Dockerfile.mlflow \
             -t bearing-mlflow:ci .
-    compose-validation:
+  compose-validation:
     name: Validate Docker Compose
     runs-on: ubuntu-latest
     needs: docker-build
