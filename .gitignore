@@ -68,3 +68,8 @@ Thumbs.db
 # Old/manual backup files
 * old.yml
 *_old.py
+# GitHub self-hosted runner
+actions-runner/
+
+# GitHub self-hosted runner
+actions-runner/
