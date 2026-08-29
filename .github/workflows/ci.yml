@@ -57,6 +57,8 @@ jobs:
           docker build \
             -f Dockerfile.mlflow \
             -t bearing-mlflow:ci .
+
+
   compose-validation:
     name: Validate Docker Compose
     runs-on: ubuntu-latest
@@ -79,6 +81,8 @@ jobs:
 
       - name: List Docker Compose services
         run: docker compose config --services
+
+
   integration-test:
     name: Integration Test
     runs-on: ubuntu-latest
@@ -95,7 +99,8 @@ jobs:
           MINIO_ROOT_USER=ci_minio_admin
           MINIO_ROOT_PASSWORD=ci_minio_password_123
           EOF
-            - name: Create external CI volumes
+
+      - name: Create external CI volumes
         run: |
           docker volume create bearing_mlflow_db
           docker volume create bearing_mlflow_artifacts
