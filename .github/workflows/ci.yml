@@ -153,7 +153,6 @@ jobs:
           docker compose down -v
           docker volume rm bearing_mlflow_db || true
           docker volume rm bearing_mlflow_artifacts || true
-
   deploy-local:
     name: Deploy Local
     runs-on:
@@ -164,13 +163,17 @@ jobs:
 
     needs: integration-test
 
-    # Never deploy pull requests.
-    # Deploy only successful pushes to main.
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
 
+    concurrency:
+      group: bearing-local-production
+      cancel-in-progress: false
+
     steps:
-      - name: Checkout repository
+      - name: Checkout new release
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Verify Docker
         run: |
@@ -184,9 +187,9 @@ jobs:
           test -f "$HOME/bearing-deploy-secrets/certs/localhost.key"
           test -f "$HOME/bearing-deploy-secrets/auth/.htpasswd"
 
-          echo "Local deployment secrets are available."
+          echo "Deployment secrets are available."
 
-      - name: Install local deployment secrets
+      - name: Install deployment secrets
         run: |
           cp "$HOME/bearing-deploy-secrets/.env" .env
 
@@ -201,7 +204,7 @@ jobs:
           cp "$HOME/bearing-deploy-secrets/auth/.htpasswd" \
             auth/.htpasswd
 
-      - name: Verify persistent Docker volumes
+      - name: Verify persistent production volumes
         run: |
           docker volume inspect bearing_mlflow_db >/dev/null
           docker volume inspect bearing_mlflow_artifacts >/dev/null
@@ -210,13 +213,37 @@ jobs:
 
           echo "All production volumes are available."
 
+      - name: Read last successful deployment
+        id: previous
+        run: |
+          STATE_FILE="$HOME/bearing-deploy-state/last_successful_sha"
+
+          if [ ! -f "$STATE_FILE" ]; then
+            echo "Last successful deployment state does not exist."
+            exit 1
+          fi
+
+          PREVIOUS_SHA=$(cat "$STATE_FILE")
+
+          echo "Previous successful deployment: $PREVIOUS_SHA"
+          echo "sha=$PREVIOUS_SHA" >> "$GITHUB_OUTPUT"
+
+      - name: Show deployment versions
+        run: |
+          echo "Previous successful SHA:"
+          echo "${{ steps.previous.outputs.sha }}"
+
+          echo "New deployment SHA:"
+          echo "$GITHUB_SHA"
+
       - name: Validate production Compose configuration
         run: |
           docker compose \
             -p bearing_fault_project \
             config --quiet
 
-      - name: Deploy local production stack
+      - name: Deploy new release
+        id: deploy
         run: |
           docker compose \
             -p bearing_fault_project \
@@ -228,7 +255,21 @@ jobs:
             -p bearing_fault_project \
             ps
 
-      - name: Wait for MLflow
+      - name: Verify PostgreSQL
+        run: |
+          docker compose \
+            -p bearing_fault_project \
+            exec -T postgres \
+            pg_isready -U mlflow -d mlflow
+
+      - name: Verify MinIO
+        run: |
+          docker compose \
+            -p bearing_fault_project \
+            exec -T minio \
+            curl -f http://127.0.0.1:9000/minio/health/live
+
+      - name: Verify MLflow
         run: |
           for i in {1..30}; do
             if docker compose \
@@ -245,10 +286,10 @@ jobs:
             sleep 5
           done
 
-          echo "MLflow health check failed."
+          echo "MLflow verification failed."
           exit 1
 
-      - name: Wait for FastAPI
+      - name: Verify FastAPI
         run: |
           for i in {1..30}; do
             if docker compose \
@@ -265,31 +306,141 @@ jobs:
             sleep 5
           done
 
-          echo "FastAPI health check failed."
+          echo "FastAPI verification failed."
           exit 1
 
-      - name: Verify Nginx
+      - name: Verify MLflow Champion
+        run: |
+          docker compose \
+            -p bearing_fault_project \
+            exec -T postgres \
+            psql -U mlflow -d mlflow -tAc \
+            "SELECT version
+             FROM registered_model_aliases
+             WHERE name='bearing_condition_logistic'
+             AND alias='champion';" \
+            | grep -Eq '^[0-9]+$'
+
+          echo "MLflow Champion alias exists."
+
+      - name: Verify Nginx configuration
         run: |
           docker compose \
             -p bearing_fault_project \
             exec -T nginx \
             nginx -t
 
-      - name: Final deployment status
+      - name: Mark deployment as successful
         run: |
-          echo "Local deployment completed successfully."
+          mkdir -p "$HOME/bearing-deploy-state"
+
+          printf '%s\n' "$GITHUB_SHA" \
+            > "$HOME/bearing-deploy-state/last_successful_sha"
+
+          chmod 600 \
+            "$HOME/bearing-deploy-state/last_successful_sha"
+
+          echo "Deployment marked as successful:"
+          echo "$GITHUB_SHA"
+
+      - name: Final production status
+        run: |
+          echo "Deployment verification completed successfully."
 
           docker compose \
             -p bearing_fault_project \
             ps
 
-      - name: Show deployment logs on failure
+      # ---------------------------------------------------------
+      # ROLLBACK
+      # ---------------------------------------------------------
+
+      - name: Roll back to last successful release
         if: failure()
         run: |
-          docker compose \
-            -p bearing_fault_project \
-            ps || true
+          echo "Deployment verification failed."
+          echo "Starting rollback..."
+
+          PREVIOUS_SHA="${{ steps.previous.outputs.sha }}"
+
+          if [ -z "$PREVIOUS_SHA" ]; then
+            echo "Previous successful SHA is unavailable."
+            exit 1
+          fi
+
+          echo "Rolling back to:"
+          echo "$PREVIOUS_SHA"
+
+          git checkout --force "$PREVIOUS_SHA"
+
+          cp "$HOME/bearing-deploy-secrets/.env" .env
+
+          mkdir -p certs auth
+
+          cp "$HOME/bearing-deploy-secrets/certs/localhost.crt" \
+            certs/localhost.crt
+
+          cp "$HOME/bearing-deploy-secrets/certs/localhost.key" \
+            certs/localhost.key
+
+          cp "$HOME/bearing-deploy-secrets/auth/.htpasswd" \
+            auth/.htpasswd
 
           docker compose \
             -p bearing_fault_project \
-            logs --tail=200 || true
+            config --quiet
+
+          docker compose \
+            -p bearing_fault_project \
+            up -d --build
+
+      - name: Verify rollback
+        if: failure()
+        run: |
+          echo "Verifying rollback..."
+
+          for i in {1..30}; do
+            MLFLOW_OK=0
+            API_OK=0
+
+            if docker compose \
+              -p bearing_fault_project \
+              exec -T mlflow \
+              python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:5000/health', timeout=3)" \
+              >/dev/null 2>&1; then
+              MLFLOW_OK=1
+            fi
+
+            if docker compose \
+              -p bearing_fault_project \
+              exec -T api \
+              python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3)" \
+              >/dev/null 2>&1; then
+              API_OK=1
+            fi
+
+            if [ "$MLFLOW_OK" -eq 1 ] && [ "$API_OK" -eq 1 ]; then
+              echo "Rollback completed successfully."
+
+              docker compose \
+                -p bearing_fault_project \
+                ps
+
+              exit 0
+            fi
+
+            echo "Waiting for rollback services... ($i/30)"
+            sleep 5
+          done
+
+          echo "Rollback verification failed."
+
+          docker compose \
+            -p bearing_fault_project \
+            ps
+
+          docker compose \
+            -p bearing_fault_project \
+            logs --tail=200
+
+          exit 1
