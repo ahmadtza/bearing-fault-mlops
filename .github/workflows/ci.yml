@@ -318,11 +318,11 @@ jobs:
             -p bearing_fault_project \
             exec -T nginx \
             nginx -t
-            
-      - name: Controlled rollback test
-        run: |
-          echo "Forcing deployment verification failure for rollback test."
-          exit 1
+
+      #- name: Controlled rollback test
+      #  run: |
+      #    echo "Forcing deployment verification failure for rollback test."
+      #    exit 1
 
       - name: Mark deployment as successful
         run: |
