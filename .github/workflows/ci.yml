@@ -193,17 +193,6 @@ jobs:
         run: |
           cp "$HOME/bearing-deploy-secrets/.env" .env
 
-          mkdir -p certs auth
-
-          cp "$HOME/bearing-deploy-secrets/certs/localhost.crt" \
-            certs/localhost.crt
-
-          cp "$HOME/bearing-deploy-secrets/certs/localhost.key" \
-            certs/localhost.key
-
-          cp "$HOME/bearing-deploy-secrets/auth/.htpasswd" \
-            auth/.htpasswd
-
       - name: Verify persistent production volumes
         run: |
           docker volume inspect bearing_mlflow_db >/dev/null
@@ -375,17 +364,6 @@ jobs:
 
           cp "$HOME/bearing-deploy-secrets/.env" .env
 
-          mkdir -p certs auth
-
-          cp "$HOME/bearing-deploy-secrets/certs/localhost.crt" \
-            certs/localhost.crt
-
-          cp "$HOME/bearing-deploy-secrets/certs/localhost.key" \
-            certs/localhost.key
-
-          cp "$HOME/bearing-deploy-secrets/auth/.htpasswd" \
-            auth/.htpasswd
-
           docker compose \
             -p bearing_fault_project \
             config --quiet
@@ -420,6 +398,32 @@ jobs:
             fi
 
             if [ "$MLFLOW_OK" -eq 1 ] && [ "$API_OK" -eq 1 ]; then
+              if ! docker compose \
+                -p bearing_fault_project \
+                exec -T nginx \
+                nginx -t; then
+
+                echo "Nginx verification after rollback failed."
+                exit 1
+              fi
+
+              if ! docker compose \
+                -p bearing_fault_project \
+                exec -T postgres \
+                pg_isready -U mlflow -d mlflow; then
+
+                echo "PostgreSQL verification after rollback failed."
+                exit 1
+              fi
+
+              if ! docker compose \
+                -p bearing_fault_project \
+                exec -T minio \
+                curl -f http://127.0.0.1:9000/minio/health/live; then
+
+                echo "MinIO verification after rollback failed."
+                exit 1
+              fi
               echo "Rollback completed successfully."
 
               docker compose \

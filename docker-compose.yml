@@ -177,7 +177,10 @@ services:
         max-file: "3"
 
   nginx:
-    image: nginx:1.27-alpine
+    build:
+      context: .
+      dockerfile: Dockerfile.nginx
+
     container_name: bearing-nginx
     init: true
 
@@ -186,10 +189,9 @@ services:
       - "443:443"
 
     volumes:
-      
-      - ./nginx.conf:/etc/nginx/nginx.conf:ro
-      - ./certs:/etc/nginx/certs:ro
-      - ./auth/.htpasswd:/etc/nginx/.htpasswd:ro
+      - ${DEPLOY_SECRETS_DIR}/certs:/etc/nginx/certs:ro
+      - ${DEPLOY_SECRETS_DIR}/auth/.htpasswd:/etc/nginx/.htpasswd:ro
+
     depends_on:
       api:
         condition: service_healthy
@@ -201,7 +203,7 @@ services:
       options:
         max-size: "10m"
         max-file: "3"
- 
+
 volumes:
   bearing_mlflow_db:
     external: true
