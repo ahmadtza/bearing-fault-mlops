@@ -190,7 +190,7 @@ services:
 
     volumes:
       - ${DEPLOY_SECRETS_DIR}/certs:/etc/nginx/certs:ro
-      - ${DEPLOY_SECRETS_DIR}/auth/.htpasswd:/etc/nginx/.htpasswd:ro
+      - ${DEPLOY_SECRETS_DIR}/auth:/etc/nginx/auth:ro
 
     depends_on:
       api:
