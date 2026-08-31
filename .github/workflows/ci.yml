@@ -321,25 +321,55 @@ jobs:
 
       - name: Verify Prometheus API target
         run: |
-          docker compose \
-            -p bearing_fault_project \
-            exec -T prometheus \
-            wget -qO- \
-            'http://127.0.0.1:9090/api/v1/query?query=up%7Bjob%3D%22bearing-api%22%7D' \
-            | grep -q '"value":\[[^]]*,"1"\]'
+          for i in {1..12}; do
+            RESPONSE="$(
+              docker compose \
+                -p bearing_fault_project \
+                exec -T prometheus \
+                wget -qO- \
+                'http://127.0.0.1:9090/api/v1/query?query=up%7Bjob%3D%22bearing-api%22%7D' \
+                2>/dev/null || true
+            )"
 
-          echo "Prometheus bearing-api target is UP."
+            if printf '%s\n' "$RESPONSE" \
+              | grep -q '"value":\[[^]]*,"1"\]'; then
+
+              echo "Prometheus bearing-api target is UP."
+              exit 0
+            fi
+
+            echo "Waiting for Prometheus to scrape bearing-api... ($i/12)"
+            sleep 5
+          done
+
+          echo "Prometheus bearing-api target verification failed."
+          exit 1
 
       - name: Verify model readiness metric
         run: |
-          docker compose \
-            -p bearing_fault_project \
-            exec -T prometheus \
-            wget -qO- \
-            'http://127.0.0.1:9090/api/v1/query?query=bearing_model_ready' \
-            | grep -q '"value":\[[^]]*,"1"\]'
+          for i in {1..12}; do
+            RESPONSE="$(
+              docker compose \
+                -p bearing_fault_project \
+                exec -T prometheus \
+                wget -qO- \
+                'http://127.0.0.1:9090/api/v1/query?query=bearing_model_ready' \
+                2>/dev/null || true
+            )"
 
-          echo "bearing_model_ready = 1."
+            if printf '%s\n' "$RESPONSE" \
+              | grep -q '"value":\[[^]]*,"1"\]'; then
+
+              echo "bearing_model_ready = 1."
+              exit 0
+            fi
+
+            echo "Waiting for bearing_model_ready metric... ($i/12)"
+            sleep 5
+          done
+
+          echo "Model readiness metric verification failed."
+          exit 1
 
       - name: Verify Grafana
         run: |
@@ -532,25 +562,52 @@ jobs:
 
               if [ "$MONITORING_REQUIRED" -eq 1 ]; then
 
-                if ! docker compose \
-                  -p bearing_fault_project \
-                  exec -T prometheus \
-                  wget -qO- \
-                  'http://127.0.0.1:9090/api/v1/query?query=up%7Bjob%3D%22bearing-api%22%7D' \
-                  | grep -q '"value":\[[^]]*,"1"\]'; then
+                MONITORING_OK=0
 
-                  echo "Prometheus bearing-api target verification after rollback failed."
-                  exit 1
-                fi
+                for j in {1..12}; do
+                  TARGET_RESPONSE="$(
+                    docker compose \
+                      -p bearing_fault_project \
+                      exec -T prometheus \
+                      wget -qO- \
+                      'http://127.0.0.1:9090/api/v1/query?query=up%7Bjob%3D%22bearing-api%22%7D' \
+                      2>/dev/null || true
+                  )"
 
-                if ! docker compose \
-                  -p bearing_fault_project \
-                  exec -T prometheus \
-                  wget -qO- \
-                  'http://127.0.0.1:9090/api/v1/query?query=bearing_model_ready' \
-                  | grep -q '"value":\[[^]]*,"1"\]'; then
+                  MODEL_RESPONSE="$(
+                    docker compose \
+                      -p bearing_fault_project \
+                      exec -T prometheus \
+                      wget -qO- \
+                      'http://127.0.0.1:9090/api/v1/query?query=bearing_model_ready' \
+                      2>/dev/null || true
+                  )"
 
-                  echo "Model readiness metric verification after rollback failed."
+                  TARGET_OK=0
+                  MODEL_OK=0
+
+                  if printf '%s\n' "$TARGET_RESPONSE" \
+                    | grep -q '"value":\[[^]]*,"1"\]'; then
+                    TARGET_OK=1
+                  fi
+
+                  if printf '%s\n' "$MODEL_RESPONSE" \
+                    | grep -q '"value":\[[^]]*,"1"\]'; then
+                    MODEL_OK=1
+                  fi
+
+                  if [ "$TARGET_OK" -eq 1 ] && \
+                     [ "$MODEL_OK" -eq 1 ]; then
+                    MONITORING_OK=1
+                    break
+                  fi
+
+                  echo "Waiting for Prometheus metrics after rollback... ($j/12)"
+                  sleep 5
+                done
+
+                if [ "$MONITORING_OK" -ne 1 ]; then
+                  echo "Monitoring verification after rollback failed."
                   exit 1
                 fi
 
