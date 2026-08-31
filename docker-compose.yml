@@ -122,6 +122,52 @@ services:
       options:
         max-size: "10m"
         max-file: "3"
+
+  minio-init:
+    image: minio/mc:RELEASE.2025-07-21T05-28-08Z
+    container_name: bearing-minio-init
+    init: true
+
+    depends_on:
+      minio:
+        condition: service_healthy
+
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+
+    entrypoint:
+      - /bin/sh
+      - -c
+
+    command:
+      - |
+        set -eu
+
+        echo "Configuring MinIO client..."
+
+        mc alias set \
+          local \
+          http://minio:9000 \
+          "$$MINIO_ROOT_USER" \
+          "$$MINIO_ROOT_PASSWORD"
+
+        echo "Ensuring MLflow artifact bucket exists..."
+
+        mc mb \
+          --ignore-existing \
+          local/mlflow-artifacts
+
+        echo "MinIO initialization completed successfully."
+
+    restart: "no"
+
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
   postgres:
     image: postgres:17-alpine
     container_name: bearing-postgres
@@ -169,12 +215,8 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
-      minio:
-        condition: service_healthy
-
-    volumes:
-      - bearing_mlflow_db:/mlflow/db
-      - bearing_mlflow_artifacts:/mlflow/artifacts
+      minio-init:
+        condition: service_completed_successfully
 
     command:
       - /bin/sh
@@ -209,6 +251,38 @@ services:
         max-file: "3"
 
 
+
+  model-bootstrap:
+    build:
+      context: .
+      dockerfile: Dockerfile.api
+
+    container_name: bearing-model-bootstrap
+    init: true
+
+    environment:
+      MLFLOW_TRACKING_URI: http://mlflow:5000
+
+    depends_on:
+      mlflow:
+        condition: service_healthy
+
+    volumes:
+      - ./scripts:/app/scripts:ro
+      - ./models:/app/models:ro
+
+    command:
+      - python
+      - /app/scripts/bootstrap_mlflow.py
+
+    restart: "no"
+
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
   api:
     build:
       context: .
@@ -229,9 +303,8 @@ services:
       MLFLOW_TRACKING_URI: http://mlflow:5000
 
     depends_on:
-      mlflow:
-        condition: service_healthy
-        restart: true
+      model-bootstrap:
+        condition: service_completed_successfully
 
     healthcheck:
       test:
@@ -283,11 +356,7 @@ services:
         max-file: "3"
 
 volumes:
-  bearing_mlflow_db:
-    external: true
 
-  bearing_mlflow_artifacts:
-    external: true
   
   bearing_postgres_data:
 
