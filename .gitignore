@@ -43,7 +43,10 @@ backups/
 # Project data and trained models
 # ============================================================
 data/
-models/
+models/*
+!models/bearing_logistic_pipeline.joblib
+!models/model_metadata.json
+!models/selected_features.json
 
 
 # ============================================================

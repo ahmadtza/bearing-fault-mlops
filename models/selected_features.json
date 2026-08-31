@@ -1,0 +1,12 @@
+[
+    "ch3_SpectralCentroidHz",
+    "ch3_BandEnergy_1000_2000",
+    "ch3_RelEnergy_2000_4000",
+    "ch3_SpectralFlatness",
+    "ch3_BandEnergy_100_500",
+    "ch3_RelEnergy_100_500",
+    "ch3_BandEnergy_500_1000",
+    "ch3_BandEnergy_2000_4000",
+    "ch1_SpectralFlatness",
+    "ch3_SpectralSpreadHz"
+]

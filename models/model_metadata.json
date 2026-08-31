@@ -1,0 +1,50 @@
+{
+    "model_name": "Bearing Condition Logistic Regression",
+    "model_type": "LogisticRegression",
+    "problem_type": "Binary classification",
+    "positive_class": {
+        "code": 1,
+        "label": "Before",
+        "meaning": "Anomalous"
+    },
+    "negative_class": {
+        "code": 0,
+        "label": "After",
+        "meaning": "Normal"
+    },
+    "number_of_features": 10,
+    "selected_features": [
+        "ch3_SpectralCentroidHz",
+        "ch3_BandEnergy_1000_2000",
+        "ch3_RelEnergy_2000_4000",
+        "ch3_SpectralFlatness",
+        "ch3_BandEnergy_100_500",
+        "ch3_RelEnergy_100_500",
+        "ch3_BandEnergy_500_1000",
+        "ch3_BandEnergy_2000_4000",
+        "ch1_SpectralFlatness",
+        "ch3_SpectralSpreadHz"
+    ],
+    "sampling_frequency_hz": 12000,
+    "window_size_samples": 2048,
+    "step_size_samples": 1024,
+    "window_overlap_samples": 1024,
+    "window_overlap_percent": 50.0,
+    "run_level_aggregation": "mean window probability",
+    "run_level_threshold": 0.5,
+    "validation_protocol": "5-fold StratifiedGroupKFold using run_id",
+    "final_cross_validation_results": {
+        "run_level_accuracy_mean": 1.0,
+        "run_level_precision_mean": 1.0,
+        "run_level_recall_mean": 1.0,
+        "run_level_f1_mean": 1.0,
+        "run_level_roc_auc_mean": 1.0,
+        "run_level_pr_auc_mean": 1.0
+    },
+    "training_dataset": {
+        "number_of_runs": 40,
+        "number_of_windows": 2680,
+        "before_runs": 20,
+        "after_runs": 20
+    }
+}
