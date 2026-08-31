@@ -76,3 +76,7 @@ actions-runner/
 
 # GitHub self-hosted runner
 actions-runner/
+
+# Local Docker Compose backups
+docker-compose.yml.backup-*
+docker-compose.yml.before-*
