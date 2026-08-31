@@ -1,4 +1,82 @@
 services:
+  grafana:
+    image: grafana/grafana:12.1.1
+    container_name: bearing-grafana
+    init: true
+
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD}
+
+    volumes:
+      - bearing_grafana_data:/var/lib/grafana
+      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./monitoring/grafana/dashboards:/var/lib/grafana/dashboards:ro
+
+    depends_on:
+      prometheus:
+        condition: service_healthy
+
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "wget",
+          "-q",
+          "--spider",
+          "http://127.0.0.1:3000/api/health"
+        ]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+    restart: unless-stopped
+
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  prometheus:
+    image: prom/prometheus:v3.5.0
+    container_name: bearing-prometheus
+    init: true
+
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.path=/prometheus"
+
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - bearing_prometheus_data:/prometheus
+
+    depends_on:
+      api:
+        condition: service_healthy
+
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "wget",
+          "-q",
+          "--spider",
+          "http://127.0.0.1:9090/-/ready"
+        ]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+
+    restart: unless-stopped
+
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
 
   minio:
     image: minio/minio:RELEASE.2025-07-23T15-54-02Z
@@ -83,7 +161,7 @@ services:
     init: true
 
     environment: 
-     MLFLOW_BACKEND_STORE_URI: postgresql+psycopg2://mlflow:${POSTGRES_PASSWORD}@postgres:5432/mlflow
+     MLFLOW_BACKEND_STORE_URI: postgresql+psycopg2://mlflow:${POSTGRES_PASSWORD_URLENCODED}@postgres:5432/mlflow
      MLFLOW_S3_ENDPOINT_URL: http://minio:9000
      AWS_ACCESS_KEY_ID: ${MINIO_ROOT_USER}
      AWS_SECRET_ACCESS_KEY: ${MINIO_ROOT_PASSWORD}
@@ -215,4 +293,7 @@ volumes:
 
   bearing_minio_data:
 
+  bearing_prometheus_data:
+
+  bearing_grafana_data:
 

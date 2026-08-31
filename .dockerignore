@@ -86,3 +86,8 @@ tests/
 docker-compose.yml
 Dockerfile*
 .dockerignore
+
+
+.pytest_cache
+__pycache__
+*.pyc

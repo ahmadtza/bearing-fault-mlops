@@ -72,6 +72,7 @@ jobs:
         run: |
           cat <<EOF > .env
           POSTGRES_PASSWORD=ci_postgres_password
+          POSTGRES_PASSWORD_URLENCODED=ci_postgres_password
           MINIO_ROOT_USER=ci_minio_admin
           MINIO_ROOT_PASSWORD=ci_minio_password_123
           EOF
@@ -96,6 +97,7 @@ jobs:
         run: |
           cat <<EOF > .env
           POSTGRES_PASSWORD=ci_postgres_password
+          POSTGRES_PASSWORD_URLENCODED=ci_postgres_password
           MINIO_ROOT_USER=ci_minio_admin
           MINIO_ROOT_PASSWORD=ci_minio_password_123
           EOF
@@ -298,6 +300,66 @@ jobs:
           echo "FastAPI verification failed."
           exit 1
 
+      - name: Verify Prometheus
+        run: |
+          for i in {1..30}; do
+            if docker compose \
+              -p bearing_fault_project \
+              exec -T prometheus \
+              wget -q --spider http://127.0.0.1:9090/-/ready; then
+
+              echo "Prometheus is healthy."
+              exit 0
+            fi
+
+            echo "Waiting for Prometheus... ($i/30)"
+            sleep 5
+          done
+
+          echo "Prometheus verification failed."
+          exit 1
+
+      - name: Verify Prometheus API target
+        run: |
+          docker compose \
+            -p bearing_fault_project \
+            exec -T prometheus \
+            wget -qO- \
+            'http://127.0.0.1:9090/api/v1/query?query=up%7Bjob%3D%22bearing-api%22%7D' \
+            | grep -q '"value":\[[^]]*,"1"\]'
+
+          echo "Prometheus bearing-api target is UP."
+
+      - name: Verify model readiness metric
+        run: |
+          docker compose \
+            -p bearing_fault_project \
+            exec -T prometheus \
+            wget -qO- \
+            'http://127.0.0.1:9090/api/v1/query?query=bearing_model_ready' \
+            | grep -q '"value":\[[^]]*,"1"\]'
+
+          echo "bearing_model_ready = 1."
+
+      - name: Verify Grafana
+        run: |
+          for i in {1..30}; do
+            if docker compose \
+              -p bearing_fault_project \
+              exec -T grafana \
+              wget -q --spider http://127.0.0.1:3000/api/health; then
+
+              echo "Grafana is healthy."
+              exit 0
+            fi
+
+            echo "Waiting for Grafana... ($i/30)"
+            sleep 5
+          done
+
+          echo "Grafana verification failed."
+          exit 1
+
       - name: Verify MLflow Champion
         run: |
           docker compose \
@@ -382,9 +444,48 @@ jobs:
         run: |
           echo "Verifying rollback..."
 
+          SERVICES="$(
+            docker compose \
+              -p bearing_fault_project \
+              config --services
+          )"
+
+          HAS_PROMETHEUS=0
+          HAS_GRAFANA=0
+
+          if printf '%s\n' "$SERVICES" | grep -qx prometheus; then
+            HAS_PROMETHEUS=1
+          fi
+
+          if printf '%s\n' "$SERVICES" | grep -qx grafana; then
+            HAS_GRAFANA=1
+          fi
+
+          if [ "$HAS_PROMETHEUS" -ne "$HAS_GRAFANA" ]; then
+            echo "Rollback release has an inconsistent monitoring stack."
+            exit 1
+          fi
+
+          MONITORING_REQUIRED="$HAS_PROMETHEUS"
+
+          if [ "$MONITORING_REQUIRED" -eq 1 ]; then
+            echo "Monitoring services exist in rollback release."
+          else
+            echo "Monitoring services are not present in rollback release."
+            echo "Monitoring verification will be skipped."
+          fi
+
           for i in {1..30}; do
             MLFLOW_OK=0
             API_OK=0
+
+            if [ "$MONITORING_REQUIRED" -eq 1 ]; then
+              PROMETHEUS_OK=0
+              GRAFANA_OK=0
+            else
+              PROMETHEUS_OK=1
+              GRAFANA_OK=1
+            fi
 
             if docker compose \
               -p bearing_fault_project \
@@ -402,7 +503,61 @@ jobs:
               API_OK=1
             fi
 
-            if [ "$MLFLOW_OK" -eq 1 ] && [ "$API_OK" -eq 1 ]; then
+            if [ "$MONITORING_REQUIRED" -eq 1 ]; then
+
+              if docker compose \
+                -p bearing_fault_project \
+                exec -T prometheus \
+                wget -q --spider http://127.0.0.1:9090/-/ready \
+                >/dev/null 2>&1; then
+                PROMETHEUS_OK=1
+              fi
+
+              if docker compose \
+                -p bearing_fault_project \
+                exec -T grafana \
+                wget -q --spider http://127.0.0.1:3000/api/health \
+                >/dev/null 2>&1; then
+                GRAFANA_OK=1
+              fi
+
+            fi
+
+            if [ "$MLFLOW_OK" -eq 1 ] && \
+               [ "$API_OK" -eq 1 ] && \
+               [ "$PROMETHEUS_OK" -eq 1 ] && \
+               [ "$GRAFANA_OK" -eq 1 ]; then
+
+              echo "Core rollback services are healthy."
+
+              if [ "$MONITORING_REQUIRED" -eq 1 ]; then
+
+                if ! docker compose \
+                  -p bearing_fault_project \
+                  exec -T prometheus \
+                  wget -qO- \
+                  'http://127.0.0.1:9090/api/v1/query?query=up%7Bjob%3D%22bearing-api%22%7D' \
+                  | grep -q '"value":\[[^]]*,"1"\]'; then
+
+                  echo "Prometheus bearing-api target verification after rollback failed."
+                  exit 1
+                fi
+
+                if ! docker compose \
+                  -p bearing_fault_project \
+                  exec -T prometheus \
+                  wget -qO- \
+                  'http://127.0.0.1:9090/api/v1/query?query=bearing_model_ready' \
+                  | grep -q '"value":\[[^]]*,"1"\]'; then
+
+                  echo "Model readiness metric verification after rollback failed."
+                  exit 1
+                fi
+
+                echo "Monitoring rollback verification succeeded."
+
+              fi
+
               if ! docker compose \
                 -p bearing_fault_project \
                 exec -T nginx \
@@ -429,6 +584,7 @@ jobs:
                 echo "MinIO verification after rollback failed."
                 exit 1
               fi
+
               echo "Rollback completed successfully."
 
               docker compose \
