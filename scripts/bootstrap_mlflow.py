@@ -137,6 +137,21 @@ def validate_artifacts():
     return model, selected_features, metadata
 
 
+def is_resource_missing(exc: MlflowException) -> bool:
+    """
+    Return True only when MLflow explicitly reports that the requested
+    registry resource does not exist.
+
+    Other MLflow errors (connection failures, server errors, permission
+    problems, malformed requests, etc.) must propagate instead of being
+    misinterpreted as an empty registry.
+    """
+    return (
+        getattr(exc, "error_code", None)
+        == "RESOURCE_DOES_NOT_EXIST"
+    )
+
+
 def get_existing_champion(client):
     try:
         return client.get_model_version_by_alias(
@@ -144,8 +159,10 @@ def get_existing_champion(client):
             CHAMPION_ALIAS,
         )
 
-    except MlflowException:
-        return None
+    except MlflowException as exc:
+        if is_resource_missing(exc):
+            return None
+        raise
 
 
 def registered_model_exists(client):
@@ -155,8 +172,10 @@ def registered_model_exists(client):
         )
         return True
 
-    except MlflowException:
-        return False
+    except MlflowException as exc:
+        if is_resource_missing(exc):
+            return False
+        raise
 
 
 # ============================================================
