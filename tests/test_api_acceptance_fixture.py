@@ -93,7 +93,7 @@ def validate_signal(
         )
 
 
-def test_run(
+def run_case(
     fixture,
     test_case,
 ):
@@ -281,7 +281,7 @@ def main():
 
             for test_case in TEST_CASES:
                 results.append(
-                    test_run(
+                    run_case(
                         fixture,
                         test_case,
                     )

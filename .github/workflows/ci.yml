@@ -267,6 +267,20 @@ jobs:
               time.sleep(delay_seconds)
           PYCODE
 
+      - name: Run raw-signal acceptance test
+        run: |
+          docker compose \
+            -p bearing_ci \
+            run --rm --no-deps \
+            -v "$PWD:/project:ro" \
+            -w /project \
+            -e BEARING_API_URL=http://api:8000/predict \
+            -e BEARING_API_USERNAME=ci_user \
+            -e BEARING_API_PASSWORD=ci_password \
+            api \
+            python \
+            tests/test_api_acceptance_fixture.py
+
       - name: Verify bootstrap idempotency
         run: |
           docker compose \
