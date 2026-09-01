@@ -43,6 +43,12 @@ The packaged baseline model distinguishes:
 
 ## Architecture
 
+
+![Bearing Fault MLOps architecture showing the vibration-signal pipeline, MLflow model registry, FastAPI serving, Nginx security, monitoring, and CI/CD](docs/images/bearing-mlops-architecture.png)
+
+The diagram above summarizes the complete serving architecture, from vibration-signal processing and the fixed production feature contract to MLflow Champion management, secure API serving, observability, and CI/CD.
+
+
 ```mermaid
 flowchart LR
     C[Client] -->|HTTPS + Basic Auth| N[Nginx]
