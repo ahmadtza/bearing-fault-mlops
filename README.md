@@ -4,6 +4,36 @@
 
 An end-to-end machine-learning serving and MLOps stack for **bearing condition diagnosis from three-channel vibration signals**. The project combines signal-processing feature extraction, a scikit-learn classification pipeline, MLflow Model Registry, PostgreSQL, MinIO, FastAPI, Nginx, Prometheus, Grafana, Docker Compose, and GitHub Actions.
 
+## Key Features
+
+- End-to-end bearing condition diagnosis from raw three-channel vibration signals.
+- Leakage-aware validation using grouped cross-validation by independent physical run.
+- Reproducible frequency-domain feature engineering with a fixed production feature contract.
+- Scikit-learn inference pipeline managed through the MLflow Model Registry.
+- PostgreSQL metadata storage and MinIO artifact storage for MLflow.
+- FastAPI inference service with Champion model loading at application startup.
+- Nginx reverse proxy with HTTPS and Basic Authentication.
+- Prometheus metrics and Grafana monitoring.
+- Containerized deployment with Docker Compose and persistent infrastructure volumes.
+- Idempotent model bootstrap for reproducible deployment from a fresh environment.
+- GitHub Actions CI covering Python tests, Docker builds, Compose validation, and full integration testing.
+
+## Technology Stack
+
+| Layer | Technologies |
+|---|---|
+| Signal processing | NumPy, SciPy |
+| Machine learning | scikit-learn |
+| Model tracking and registry | MLflow |
+| API and serving | FastAPI, Uvicorn |
+| Metadata store | PostgreSQL |
+| Artifact storage | MinIO |
+| Reverse proxy and TLS | Nginx |
+| Monitoring | Prometheus, Grafana |
+| Containerization | Docker, Docker Compose |
+| CI/CD | GitHub Actions |
+| Testing | pytest |
+
 The packaged baseline model distinguishes:
 
 - **Before** (`1`) — anomalous bearing condition
@@ -44,6 +74,20 @@ The training dataset contains **40 independent runs** and **2,680 overlapping si
 | Total windows | 2,680 |
 
 A random window-level split is inappropriate for strongly overlapping/adjacent vibration windows because windows from the same physical run can leak information across train and validation sets. The final validation protocol therefore uses **5-fold `StratifiedGroupKFold` grouped by `run_id`**.
+
+### Model results
+
+The final model comparison was performed using leakage-aware grouped validation, with `run_id` used to keep windows from the same physical recording in the same fold.
+
+| Model | Window Accuracy | Window F1 | Run Accuracy | Run F1 |
+|---|---:|---:|---:|---:|
+| Logistic Regression | 0.8216 | 0.8207 | **1.0000** | **1.0000** |
+| Random Forest | 0.8672 | — | 0.9750 | 0.9778 |
+| SVM (RBF) | **0.8709** | — | **1.0000** | **1.0000** |
+
+Logistic Regression was selected as the packaged baseline Champion because it achieved perfect run-level classification under the grouped validation protocol while retaining a simpler and more interpretable model structure.
+
+> **Important:** the run-level results are dataset-specific. They do not establish generalization to unseen machines, bearings, sensors, loads, speeds, or fault mechanisms.
 
 The packaged Logistic Regression pipeline achieved mean run-level Accuracy, Precision, Recall, F1, ROC-AUC, and PR-AUC of **1.0** under that group-aware cross-validation protocol. These results characterize this dataset and validation design only; external validation is still required before any real-world diagnostic or maintenance decision.
 
@@ -180,10 +224,11 @@ docker run --rm \
   htpasswd -nbB "$API_USER" "$API_PASSWORD" \
   > "$SECRETS_DIR/auth/.htpasswd"
 
+chmod 755 "$SECRETS_DIR/auth"
 chmod 644 "$SECRETS_DIR/auth/.htpasswd"
 ```
 
-`644` is intentional for this bind-mounted password-hash file: the Nginx worker must be able to read it. The TLS private key remains `600`.
+`755` on the `auth` directory allows the Nginx worker to traverse the bind-mounted directory, while `644` allows it to read the password-hash file. The TLS private key remains `600`.
 
 Keep `API_USER` and `API_PASSWORD` available in your shell for the verification commands below.
 
