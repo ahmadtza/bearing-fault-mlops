@@ -1,5 +1,11 @@
 name: Bearing Fault CI
 
+permissions:
+  contents: read
+
+permissions:
+  contents: read
+
 on:
   push:
     branches:
@@ -75,6 +81,8 @@ jobs:
           POSTGRES_PASSWORD_URLENCODED=ci_postgres_password
           MINIO_ROOT_USER=ci_minio_admin
           MINIO_ROOT_PASSWORD=ci_minio_password_123
+          GRAFANA_ADMIN_PASSWORD=ci_grafana_password
+          DEPLOY_SECRETS_DIR=/tmp/bearing-ci-secrets
           EOF
 
       - name: Validate Docker Compose configuration
@@ -100,569 +108,167 @@ jobs:
           POSTGRES_PASSWORD_URLENCODED=ci_postgres_password
           MINIO_ROOT_USER=ci_minio_admin
           MINIO_ROOT_PASSWORD=ci_minio_password_123
+          GRAFANA_ADMIN_PASSWORD=ci_grafana_password
+          DEPLOY_SECRETS_DIR=/tmp/bearing-ci-secrets
           EOF
 
-      - name: Create external CI volumes
+      - name: Validate CI Compose configuration
         run: |
-          docker volume create bearing_mlflow_db
-          docker volume create bearing_mlflow_artifacts
+          docker compose \
+            -p bearing_ci \
+            config --quiet
 
-      - name: Start infrastructure services
+      - name: Start fresh application stack
         run: |
-          docker compose up -d --build postgres minio mlflow
+          docker compose \
+            -p bearing_ci \
+            up -d --build api
 
       - name: Show service status
         run: |
-          docker compose ps
-
-      - name: Wait for MLflow health
-        run: |
-          for i in {1..30}; do
-            if docker compose exec -T mlflow \
-              python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:5000/health')" \
-              2>/dev/null; then
-              echo "MLflow is healthy"
-              exit 0
-            fi
-
-            echo "Waiting for MLflow... ($i/30)"
-            sleep 5
-          done
-
-          echo "MLflow did not become healthy"
-          docker compose logs mlflow
-          exit 1
+          docker compose \
+            -p bearing_ci \
+            ps -a
 
       - name: Verify PostgreSQL
         run: |
-          docker compose exec -T postgres \
-            pg_isready -U mlflow -d mlflow
+          docker compose             -p bearing_ci             exec -T postgres             pg_isready -U mlflow -d mlflow
 
       - name: Verify MinIO
         run: |
-          docker compose exec -T minio \
-            curl -f http://127.0.0.1:9000/minio/health/live
+          docker compose             -p bearing_ci             exec -T minio             curl -f http://127.0.0.1:9000/minio/health/live
+
+      - name: Verify one-shot initialization
+        run: |
+          MINIO_INIT_EXIT="$(
+            docker inspect               -f '{{.State.ExitCode}}'               "$(docker compose -p bearing_ci ps -aq minio-init)"
+          )"
+
+          MODEL_BOOTSTRAP_EXIT="$(
+            docker inspect               -f '{{.State.ExitCode}}'               "$(docker compose -p bearing_ci ps -aq model-bootstrap)"
+          )"
+
+          echo "minio-init exit: $MINIO_INIT_EXIT"
+          echo "model-bootstrap exit: $MODEL_BOOTSTRAP_EXIT"
+
+          test "$MINIO_INIT_EXIT" = "0"
+          test "$MODEL_BOOTSTRAP_EXIT" = "0"
+
+      - name: Verify MLflow
+        run: |
+          docker compose             -p bearing_ci             exec -T mlflow             python - <<'PYCODE'
+          import urllib.request
+
+          response = urllib.request.urlopen(
+              "http://127.0.0.1:5000/health",
+              timeout=5,
+          )
+
+          assert response.status == 200
+          print("MLflow is healthy.")
+          PYCODE
+
+      - name: Verify fresh MLflow Champion
+        run: |
+          docker compose             -p bearing_ci             exec -T api             python - <<'PYCODE'
+          import os
+
+          import mlflow
+          from mlflow import MlflowClient
+
+          uri = os.environ["MLFLOW_TRACKING_URI"]
+
+          mlflow.set_tracking_uri(uri)
+          mlflow.set_registry_uri(uri)
+
+          client = MlflowClient()
+
+          champion = client.get_model_version_by_alias(
+              "bearing_condition_logistic",
+              "champion",
+          )
+
+          print("Model   :", champion.name)
+          print("Version :", champion.version)
+          print("Alias   : champion")
+
+          assert champion.name == "bearing_condition_logistic"
+          assert champion.version == "1"
+
+          print("Fresh Champion Version 1 verified.")
+          PYCODE
+
+      - name: Verify FastAPI model loading
+        run: |
+          docker compose             -p bearing_ci             exec -T api             python - <<'PYCODE'
+          import json
+          import urllib.request
+
+          response = urllib.request.urlopen(
+              "http://127.0.0.1:8000/health",
+              timeout=5,
+          )
+
+          data = json.loads(response.read())
+
+          assert response.status == 200
+          assert data.get("model_loaded") is True
+
+          print("FastAPI is healthy.")
+          print("Model URI:", data.get("model_uri"))
+          PYCODE
+
+      - name: Verify bootstrap idempotency
+        run: |
+          docker compose             -p bearing_ci             run --rm             model-bootstrap             | tee /tmp/bootstrap-second-run.log
+
+          grep -q             "BOOTSTRAP NOT REQUIRED"             /tmp/bootstrap-second-run.log
+
+          docker compose             -p bearing_ci             exec -T api             python - <<'PYCODE'
+          import os
+
+          import mlflow
+          from mlflow import MlflowClient
+
+          uri = os.environ["MLFLOW_TRACKING_URI"]
+
+          mlflow.set_tracking_uri(uri)
+          mlflow.set_registry_uri(uri)
+
+          client = MlflowClient()
+
+          versions = client.search_model_versions(
+              "name='bearing_condition_logistic'"
+          )
+
+          champion = client.get_model_version_by_alias(
+              "bearing_condition_logistic",
+              "champion",
+          )
+
+          print("Model versions:", len(versions))
+          print("Champion version:", champion.version)
+
+          assert len(versions) == 1
+          assert champion.version == "1"
+
+          print("Bootstrap idempotency verified.")
+          PYCODE
 
       - name: Show logs on failure
         if: failure()
         run: |
-          docker compose ps
-          docker compose logs --tail=200
+          docker compose \
+            -p bearing_ci \
+            ps -a
+
+          docker compose \
+            -p bearing_ci \
+            logs --tail=200
 
       - name: Stop integration environment
         if: always()
         run: |
-          docker compose down -v
-          docker volume rm bearing_mlflow_db || true
-          docker volume rm bearing_mlflow_artifacts || true
-  deploy-local:
-    name: Deploy Local
-    runs-on:
-      - self-hosted
-      - Linux
-      - X64
-      - local-deploy
-
-    needs: integration-test
-
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-
-    concurrency:
-      group: bearing-local-production
-      cancel-in-progress: false
-
-    steps:
-      - name: Checkout new release
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - name: Verify Docker
-        run: |
-          docker version
-          docker compose version
-
-      - name: Verify deployment secrets
-        run: |
-          test -f "$HOME/bearing-deploy-secrets/.env"
-          test -f "$HOME/bearing-deploy-secrets/certs/localhost.crt"
-          test -f "$HOME/bearing-deploy-secrets/certs/localhost.key"
-          test -f "$HOME/bearing-deploy-secrets/auth/.htpasswd"
-
-          echo "Deployment secrets are available."
-
-      - name: Install deployment secrets
-        run: |
-          cp "$HOME/bearing-deploy-secrets/.env" .env
-
-      - name: Verify persistent production volumes
-        run: |
-          docker volume inspect bearing_mlflow_db >/dev/null
-          docker volume inspect bearing_mlflow_artifacts >/dev/null
-          docker volume inspect bearing_fault_project_bearing_postgres_data >/dev/null
-          docker volume inspect bearing_fault_project_bearing_minio_data >/dev/null
-
-          echo "All production volumes are available."
-
-      - name: Read last successful deployment
-        id: previous
-        run: |
-          STATE_FILE="$HOME/bearing-deploy-state/last_successful_sha"
-
-          if [ ! -f "$STATE_FILE" ]; then
-            echo "Last successful deployment state does not exist."
-            exit 1
-          fi
-
-          PREVIOUS_SHA=$(cat "$STATE_FILE")
-
-          echo "Previous successful deployment: $PREVIOUS_SHA"
-          echo "sha=$PREVIOUS_SHA" >> "$GITHUB_OUTPUT"
-
-      - name: Show deployment versions
-        run: |
-          echo "Previous successful SHA:"
-          echo "${{ steps.previous.outputs.sha }}"
-
-          echo "New deployment SHA:"
-          echo "$GITHUB_SHA"
-
-      - name: Validate production Compose configuration
-        run: |
           docker compose \
-            -p bearing_fault_project \
-            config --quiet
-
-      - name: Deploy new release
-        id: deploy
-        run: |
-          docker compose \
-            -p bearing_fault_project \
-            up -d --build
-
-      - name: Show deployment status
-        run: |
-          docker compose \
-            -p bearing_fault_project \
-            ps
-
-      - name: Verify PostgreSQL
-        run: |
-          docker compose \
-            -p bearing_fault_project \
-            exec -T postgres \
-            pg_isready -U mlflow -d mlflow
-
-      - name: Verify MinIO
-        run: |
-          docker compose \
-            -p bearing_fault_project \
-            exec -T minio \
-            curl -f http://127.0.0.1:9000/minio/health/live
-
-      - name: Verify MLflow
-        run: |
-          for i in {1..30}; do
-            if docker compose \
-              -p bearing_fault_project \
-              exec -T mlflow \
-              python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:5000/health', timeout=3)" \
-              2>/dev/null; then
-
-              echo "MLflow is healthy."
-              exit 0
-            fi
-
-            echo "Waiting for MLflow... ($i/30)"
-            sleep 5
-          done
-
-          echo "MLflow verification failed."
-          exit 1
-
-      - name: Verify FastAPI
-        run: |
-          for i in {1..30}; do
-            if docker compose \
-              -p bearing_fault_project \
-              exec -T api \
-              python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3)" \
-              2>/dev/null; then
-
-              echo "FastAPI is healthy."
-              exit 0
-            fi
-
-            echo "Waiting for FastAPI... ($i/30)"
-            sleep 5
-          done
-
-          echo "FastAPI verification failed."
-          exit 1
-
-      - name: Verify Prometheus
-        run: |
-          for i in {1..30}; do
-            if docker compose \
-              -p bearing_fault_project \
-              exec -T prometheus \
-              wget -q --spider http://127.0.0.1:9090/-/ready; then
-
-              echo "Prometheus is healthy."
-              exit 0
-            fi
-
-            echo "Waiting for Prometheus... ($i/30)"
-            sleep 5
-          done
-
-          echo "Prometheus verification failed."
-          exit 1
-
-      - name: Verify Prometheus API target
-        run: |
-          for i in {1..12}; do
-            RESPONSE="$(
-              docker compose \
-                -p bearing_fault_project \
-                exec -T prometheus \
-                wget -qO- \
-                'http://127.0.0.1:9090/api/v1/query?query=up%7Bjob%3D%22bearing-api%22%7D' \
-                2>/dev/null || true
-            )"
-
-            if printf '%s\n' "$RESPONSE" \
-              | grep -q '"value":\[[^]]*,"1"\]'; then
-
-              echo "Prometheus bearing-api target is UP."
-              exit 0
-            fi
-
-            echo "Waiting for Prometheus to scrape bearing-api... ($i/12)"
-            sleep 5
-          done
-
-          echo "Prometheus bearing-api target verification failed."
-          exit 1
-
-      - name: Verify model readiness metric
-        run: |
-          for i in {1..12}; do
-            RESPONSE="$(
-              docker compose \
-                -p bearing_fault_project \
-                exec -T prometheus \
-                wget -qO- \
-                'http://127.0.0.1:9090/api/v1/query?query=bearing_model_ready' \
-                2>/dev/null || true
-            )"
-
-            if printf '%s\n' "$RESPONSE" \
-              | grep -q '"value":\[[^]]*,"1"\]'; then
-
-              echo "bearing_model_ready = 1."
-              exit 0
-            fi
-
-            echo "Waiting for bearing_model_ready metric... ($i/12)"
-            sleep 5
-          done
-
-          echo "Model readiness metric verification failed."
-          exit 1
-
-      - name: Verify Grafana
-        run: |
-          for i in {1..30}; do
-            if docker compose \
-              -p bearing_fault_project \
-              exec -T grafana \
-              wget -q --spider http://127.0.0.1:3000/api/health; then
-
-              echo "Grafana is healthy."
-              exit 0
-            fi
-
-            echo "Waiting for Grafana... ($i/30)"
-            sleep 5
-          done
-
-          echo "Grafana verification failed."
-          exit 1
-
-      - name: Verify MLflow Champion
-        run: |
-          docker compose \
-            -p bearing_fault_project \
-            exec -T postgres \
-            psql -U mlflow -d mlflow -tAc \
-            "SELECT version
-             FROM registered_model_aliases
-             WHERE name='bearing_condition_logistic'
-             AND alias='champion';" \
-            | grep -Eq '^[0-9]+$'
-
-          echo "MLflow Champion alias exists."
-
-      - name: Verify Nginx configuration
-        run: |
-          docker compose \
-            -p bearing_fault_project \
-            exec -T nginx \
-            nginx -t
-
-      #- name: Controlled rollback test
-      #  run: |
-      #    echo "Forcing deployment verification failure for rollback test."
-      #    exit 1
-
-      - name: Mark deployment as successful
-        run: |
-          mkdir -p "$HOME/bearing-deploy-state"
-
-          printf '%s\n' "$GITHUB_SHA" \
-            > "$HOME/bearing-deploy-state/last_successful_sha"
-
-          chmod 600 \
-            "$HOME/bearing-deploy-state/last_successful_sha"
-
-          echo "Deployment marked as successful:"
-          echo "$GITHUB_SHA"
-
-      - name: Final production status
-        run: |
-          echo "Deployment verification completed successfully."
-
-          docker compose \
-            -p bearing_fault_project \
-            ps
-
-      # ---------------------------------------------------------
-      # ROLLBACK
-      # ---------------------------------------------------------
-
-      - name: Roll back to last successful release
-        if: failure()
-        run: |
-          echo "Deployment verification failed."
-          echo "Starting rollback..."
-
-          PREVIOUS_SHA="${{ steps.previous.outputs.sha }}"
-
-          if [ -z "$PREVIOUS_SHA" ]; then
-            echo "Previous successful SHA is unavailable."
-            exit 1
-          fi
-
-          echo "Rolling back to:"
-          echo "$PREVIOUS_SHA"
-
-          git checkout --force "$PREVIOUS_SHA"
-
-          cp "$HOME/bearing-deploy-secrets/.env" .env
-
-          docker compose \
-            -p bearing_fault_project \
-            config --quiet
-
-          docker compose \
-            -p bearing_fault_project \
-            up -d --build
-
-      - name: Verify rollback
-        if: failure()
-        run: |
-          echo "Verifying rollback..."
-
-          SERVICES="$(
-            docker compose \
-              -p bearing_fault_project \
-              config --services
-          )"
-
-          HAS_PROMETHEUS=0
-          HAS_GRAFANA=0
-
-          if printf '%s\n' "$SERVICES" | grep -qx prometheus; then
-            HAS_PROMETHEUS=1
-          fi
-
-          if printf '%s\n' "$SERVICES" | grep -qx grafana; then
-            HAS_GRAFANA=1
-          fi
-
-          if [ "$HAS_PROMETHEUS" -ne "$HAS_GRAFANA" ]; then
-            echo "Rollback release has an inconsistent monitoring stack."
-            exit 1
-          fi
-
-          MONITORING_REQUIRED="$HAS_PROMETHEUS"
-
-          if [ "$MONITORING_REQUIRED" -eq 1 ]; then
-            echo "Monitoring services exist in rollback release."
-          else
-            echo "Monitoring services are not present in rollback release."
-            echo "Monitoring verification will be skipped."
-          fi
-
-          for i in {1..30}; do
-            MLFLOW_OK=0
-            API_OK=0
-
-            if [ "$MONITORING_REQUIRED" -eq 1 ]; then
-              PROMETHEUS_OK=0
-              GRAFANA_OK=0
-            else
-              PROMETHEUS_OK=1
-              GRAFANA_OK=1
-            fi
-
-            if docker compose \
-              -p bearing_fault_project \
-              exec -T mlflow \
-              python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:5000/health', timeout=3)" \
-              >/dev/null 2>&1; then
-              MLFLOW_OK=1
-            fi
-
-            if docker compose \
-              -p bearing_fault_project \
-              exec -T api \
-              python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3)" \
-              >/dev/null 2>&1; then
-              API_OK=1
-            fi
-
-            if [ "$MONITORING_REQUIRED" -eq 1 ]; then
-
-              if docker compose \
-                -p bearing_fault_project \
-                exec -T prometheus \
-                wget -q --spider http://127.0.0.1:9090/-/ready \
-                >/dev/null 2>&1; then
-                PROMETHEUS_OK=1
-              fi
-
-              if docker compose \
-                -p bearing_fault_project \
-                exec -T grafana \
-                wget -q --spider http://127.0.0.1:3000/api/health \
-                >/dev/null 2>&1; then
-                GRAFANA_OK=1
-              fi
-
-            fi
-
-            if [ "$MLFLOW_OK" -eq 1 ] && \
-               [ "$API_OK" -eq 1 ] && \
-               [ "$PROMETHEUS_OK" -eq 1 ] && \
-               [ "$GRAFANA_OK" -eq 1 ]; then
-
-              echo "Core rollback services are healthy."
-
-              if [ "$MONITORING_REQUIRED" -eq 1 ]; then
-
-                MONITORING_OK=0
-
-                for j in {1..12}; do
-                  TARGET_RESPONSE="$(
-                    docker compose \
-                      -p bearing_fault_project \
-                      exec -T prometheus \
-                      wget -qO- \
-                      'http://127.0.0.1:9090/api/v1/query?query=up%7Bjob%3D%22bearing-api%22%7D' \
-                      2>/dev/null || true
-                  )"
-
-                  MODEL_RESPONSE="$(
-                    docker compose \
-                      -p bearing_fault_project \
-                      exec -T prometheus \
-                      wget -qO- \
-                      'http://127.0.0.1:9090/api/v1/query?query=bearing_model_ready' \
-                      2>/dev/null || true
-                  )"
-
-                  TARGET_OK=0
-                  MODEL_OK=0
-
-                  if printf '%s\n' "$TARGET_RESPONSE" \
-                    | grep -q '"value":\[[^]]*,"1"\]'; then
-                    TARGET_OK=1
-                  fi
-
-                  if printf '%s\n' "$MODEL_RESPONSE" \
-                    | grep -q '"value":\[[^]]*,"1"\]'; then
-                    MODEL_OK=1
-                  fi
-
-                  if [ "$TARGET_OK" -eq 1 ] && \
-                     [ "$MODEL_OK" -eq 1 ]; then
-                    MONITORING_OK=1
-                    break
-                  fi
-
-                  echo "Waiting for Prometheus metrics after rollback... ($j/12)"
-                  sleep 5
-                done
-
-                if [ "$MONITORING_OK" -ne 1 ]; then
-                  echo "Monitoring verification after rollback failed."
-                  exit 1
-                fi
-
-                echo "Monitoring rollback verification succeeded."
-
-              fi
-
-              if ! docker compose \
-                -p bearing_fault_project \
-                exec -T nginx \
-                nginx -t; then
-
-                echo "Nginx verification after rollback failed."
-                exit 1
-              fi
-
-              if ! docker compose \
-                -p bearing_fault_project \
-                exec -T postgres \
-                pg_isready -U mlflow -d mlflow; then
-
-                echo "PostgreSQL verification after rollback failed."
-                exit 1
-              fi
-
-              if ! docker compose \
-                -p bearing_fault_project \
-                exec -T minio \
-                curl -f http://127.0.0.1:9000/minio/health/live; then
-
-                echo "MinIO verification after rollback failed."
-                exit 1
-              fi
-
-              echo "Rollback completed successfully."
-
-              docker compose \
-                -p bearing_fault_project \
-                ps
-
-              exit 0
-            fi
-
-            echo "Waiting for rollback services... ($i/30)"
-            sleep 5
-          done
-
-          echo "Rollback verification failed."
-
-          docker compose \
-            -p bearing_fault_project \
-            ps
-
-          docker compose \
-            -p bearing_fault_project \
-            logs --tail=200
-
-          exit 1
+            -p bearing_ci \
+            down -v --remove-orphans
