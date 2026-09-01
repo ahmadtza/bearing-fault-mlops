@@ -1,5 +1,7 @@
 # Bearing Fault MLOps
 
+[![Bearing Fault CI](https://github.com/ahmadtza/bearing-fault-mlops/actions/workflows/ci.yml/badge.svg)](https://github.com/ahmadtza/bearing-fault-mlops/actions/workflows/ci.yml)
+
 An end-to-end machine-learning serving and MLOps stack for **bearing condition diagnosis from three-channel vibration signals**. The project combines signal-processing feature extraction, a scikit-learn classification pipeline, MLflow Model Registry, PostgreSQL, MinIO, FastAPI, Nginx, Prometheus, Grafana, Docker Compose, and GitHub Actions.
 
 The packaged baseline model distinguishes:
