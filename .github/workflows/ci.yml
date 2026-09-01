@@ -3,9 +3,6 @@ name: Bearing Fault CI
 permissions:
   contents: read
 
-permissions:
-  contents: read
-
 on:
   push:
     branches:
@@ -132,20 +129,30 @@ jobs:
 
       - name: Verify PostgreSQL
         run: |
-          docker compose             -p bearing_ci             exec -T postgres             pg_isready -U mlflow -d mlflow
+          docker compose \
+          -p bearing_ci \
+          exec -T postgres \
+          pg_isready -U mlflow -d mlflow
 
       - name: Verify MinIO
         run: |
-          docker compose             -p bearing_ci             exec -T minio             curl -f http://127.0.0.1:9000/minio/health/live
+          docker compose \
+          -p bearing_ci \
+          exec -T minio \
+          curl -f http://127.0.0.1:9000/minio/health/live
 
       - name: Verify one-shot initialization
         run: |
           MINIO_INIT_EXIT="$(
-            docker inspect               -f '{{.State.ExitCode}}'               "$(docker compose -p bearing_ci ps -aq minio-init)"
+            docker inspect \
+            -f '{{.State.ExitCode}}' \
+            "$(docker compose -p bearing_ci ps -aq minio-init)"
           )"
 
           MODEL_BOOTSTRAP_EXIT="$(
-            docker inspect               -f '{{.State.ExitCode}}'               "$(docker compose -p bearing_ci ps -aq model-bootstrap)"
+            docker inspect \
+            -f '{{.State.ExitCode}}' \
+            "$(docker compose -p bearing_ci ps -aq model-bootstrap)"
           )"
 
           echo "minio-init exit: $MINIO_INIT_EXIT"
@@ -156,7 +163,10 @@ jobs:
 
       - name: Verify MLflow
         run: |
-          docker compose             -p bearing_ci             exec -T mlflow             python - <<'PYCODE'
+          docker compose \
+          -p bearing_ci \
+          exec -T mlflow \
+          python - <<'PYCODE'
           import urllib.request
 
           response = urllib.request.urlopen(
@@ -170,7 +180,10 @@ jobs:
 
       - name: Verify fresh MLflow Champion
         run: |
-          docker compose             -p bearing_ci             exec -T api             python - <<'PYCODE'
+          docker compose \
+          -p bearing_ci \
+          exec -T api \
+          python - <<'PYCODE'
           import os
 
           import mlflow
@@ -200,7 +213,10 @@ jobs:
 
       - name: Verify FastAPI model loading
         run: |
-          docker compose             -p bearing_ci             exec -T api             python - <<'PYCODE'
+          docker compose \
+          -p bearing_ci \
+          exec -T api \
+          python - <<'PYCODE'
           import json
           import urllib.request
 
@@ -220,11 +236,20 @@ jobs:
 
       - name: Verify bootstrap idempotency
         run: |
-          docker compose             -p bearing_ci             run --rm             model-bootstrap             | tee /tmp/bootstrap-second-run.log
+          docker compose \
+          -p bearing_ci \
+          run --rm \
+          model-bootstrap \
+          | tee /tmp/bootstrap-second-run.log
 
-          grep -q             "BOOTSTRAP NOT REQUIRED"             /tmp/bootstrap-second-run.log
+          grep -q \
+          "BOOTSTRAP NOT REQUIRED" \
+          /tmp/bootstrap-second-run.log
 
-          docker compose             -p bearing_ci             exec -T api             python - <<'PYCODE'
+          docker compose \
+          -p bearing_ci \
+          exec -T api \
+          python - <<'PYCODE'
           import os
 
           import mlflow
