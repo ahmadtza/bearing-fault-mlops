@@ -388,6 +388,15 @@ python -m pytest
 
 The API unit tests use a test model and do not require a live MLflow/PostgreSQL/MinIO stack.
 
+In addition to the unit-test suite, the project includes a raw-signal acceptance test. It submits representative three-channel vibration recordings to the production `/predict` endpoint and verifies the expected run-level diagnosis after production feature extraction and MLflow Champion inference.
+
+The current acceptance cases are:
+
+- Run 1: expected `Before` / `Anomalous`
+- Run 25: expected `After` / `Normal`
+
+The acceptance test verifies the predicted class, label, condition, and successful processing of the raw vibration signal. The reported anomaly probability is observational and is not asserted to an exact value.
+
 ## Continuous integration
 
 The public GitHub Actions workflow runs on GitHub-hosted `ubuntu-latest` runners and performs four stages:
@@ -395,9 +404,43 @@ The public GitHub Actions workflow runs on GitHub-hosted `ubuntu-latest` runners
 1. Python tests
 2. Docker image builds
 3. Docker Compose validation
-4. disposable integration testing
+4. disposable integration and raw-signal acceptance testing
 
-The integration job uses a separate Compose project (`bearing_ci`), starts a fresh PostgreSQL/MinIO/MLflow/API environment, verifies initialization and the fresh Champion model, checks bootstrap idempotency, and removes its disposable volumes during cleanup.
+The integration job uses a separate Compose project (`bearing_ci`) and starts a fresh PostgreSQL/MinIO/MLflow/API environment. It then verifies:
+
+- PostgreSQL and MinIO availability
+- one-shot MinIO and model initialization
+- MLflow health
+- creation of the fresh `bearing_condition_logistic` Champion
+- FastAPI model loading
+- raw-signal inference through the production feature-engineering and Champion-model path
+- expected `Anomalous` classification for Run 1
+- expected `Normal` classification for Run 25
+- model-bootstrap idempotency
+
+The CI acceptance path is:
+
+```text
+Compressed acceptance fixture
+        |
+        v
+Three-channel vibration signal
+        |
+        v
+FastAPI /predict
+        |
+        v
+Production feature engineering
+        |
+        v
+MLflow Champion
+        |
+        +--> Run 1  --> Anomalous --> PASS
+        |
+        +--> Run 25 --> Normal    --> PASS
+```
+
+The integration environment is disposable. Its Compose-managed volumes are removed during CI cleanup and are separate from persistent deployment volumes.
 
 No local/self-hosted deployment job is part of the public CI workflow.
 
@@ -453,11 +496,21 @@ The repository also contains research/experimentation scripts used during model 
 
 ## Dataset and reproducibility
 
-The original vibration dataset is intentionally not committed to this repository. The serving stack can therefore be cloned and started without distributing the research data.
+The original vibration dataset is not committed to this repository. It is provided separately by The MathWorks, Inc. as the **3 Axis Vibration Data Set**.
+
+The repository includes only a small derived acceptance-test fixture containing representative recordings for Run 1 (`Before` / anomalous) and Run 25 (`After` / normal). This fixture is used exclusively to exercise the production raw-signal inference path during CI.
+
+The source dataset permits redistribution and use with or without modification subject to its accompanying license conditions. The derived fixture therefore retains the MathWorks dataset license in:
+
+`tests/fixtures/LICENSE.mathworks-vibration-data.txt`
+
+Required dataset citation:
+
+> Data Set provided by The MathWorks, Inc. (www.mathworks.com).
 
 The packaged metadata records the final signal-processing and validation contract, including the 12 kHz sampling rate, 2,048-sample windows, 50% overlap, 40 run groups, ten selected features, and group-aware validation protocol.
 
-For scientific reproduction, obtain the source dataset separately, preserve run identity during evaluation, and avoid random window-level splitting that allows windows from the same run to appear in both training and validation folds.
+For scientific reproduction, obtain the complete source dataset separately, preserve run identity during evaluation, and avoid random window-level splitting that allows windows from the same run to appear in both training and validation folds.
 
 ## Limitations
 
@@ -469,6 +522,10 @@ For scientific reproduction, obtain the source dataset separately, preserve run 
 
 ## License
 
-This project is released under the **MIT License**.
+The project source code is released under the **MIT License**.
 
 Copyright (c) 2026 Ahmad Taghizadeh.
+
+The derived vibration-data fixture under `tests/fixtures/` is based on the **3 Axis Vibration Data Set** provided by The MathWorks, Inc. and is distributed under the dataset license included in `tests/fixtures/LICENSE.mathworks-vibration-data.txt`.
+
+Data Set provided by The MathWorks, Inc. (www.mathworks.com).
